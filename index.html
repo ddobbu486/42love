@@ -399,7 +399,8 @@ function nowYM(){ const d=new Date(); return{y:d.getFullYear(),m:d.getMonth()+1,
 // =============================================
 // 구글 시트 연동
 // =============================================
-function getUrl(){ return localStorage.getItem('sj_gs')||''; }
+const DEFAULT_GS_URL = 'https://script.google.com/macros/s/AKfycbyjtzmIthNH3cyZeOyG88HeKOLrj_Zz5K3YXlGh5rGcPNcrlbpqy5571c6QGju7oEoM/exec';
+function getUrl(){ return localStorage.getItem('sj_gs')||DEFAULT_GS_URL; }
 
 function setSS(state, msg){
   const d = document.getElementById('sdot');
@@ -898,8 +899,7 @@ function addBucket(){
 (function init(){
   loadCache();
   initYears(); renderL(); resetMF(); renderBucket();
-  if(getUrl()) syncNow();
-  else setSS('err','구글 시트 미연결 · 로고 5번 클릭 → 설정');
+  syncNow();
 })();
 </script>
 </body>
