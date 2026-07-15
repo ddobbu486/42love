@@ -396,6 +396,7 @@ let allData = [];       // 구글 시트에서 받아온 전체 데이터
 let newRows = [];       // 이번 세션에 추가한 내역 (구글 시트 미반영 시 임시)
 let balCheck = 0;
 let balSafe = 0;
+let lastSyncOk = false;  // 마지막 동기화가 실제로 구글시트에서 성공했는지 여부
 let ltab = 'all';
 let isAdmin = false;
 const ADMIN_PW = '0176';
@@ -455,10 +456,12 @@ async function syncNow(){
       newRows = [];
       localStorage.setItem('sj_cache', JSON.stringify({data:allData, balCheck, balSafe}));
       setSS('ok', `연결됨 · ${allData.length}건`);
+      lastSyncOk = true;
     } else throw new Error('invalid');
   } catch(e){
     loadCache();
     setSS('err','연결 실패 · 캐시 데이터 사용 중');
+    lastSyncOk = false;
   }
   renderAll();
 }
@@ -745,7 +748,7 @@ function tChange(){
   document.getElementById('ma').value=t==='수입'?FEE:'';
 }
 
-function saveEntry(){
+async function saveEntry(){
   const type=document.getElementById('mt').value;
   const member=document.getElementById('mm').value;
   const y=document.getElementById('mdy').value;
@@ -757,16 +760,33 @@ function saveEntry(){
 
   const interestSrc=document.getElementById('mmi').value;
   const entryMember = type==='수입' ? member : (type==='이자' ? interestSrc : '');
+  const pendingNewRows=[...newRows]; // 재동기화 시 이번 세션에서 아직 못 올린 내역은 보존
   const entry={id:Date.now(),type,member:entryMember,date:`${y}-${m}-${dd}`,amount,desc};
-  newRows=[...newRows,entry];
+
+  // 저장 직전에 구글시트 최신 데이터로 다시 동기화 (오래된 캐시로 덮어쓰는 사고 방지)
+  setSS('load','저장 전 최신 데이터 확인 중...');
+  await syncNow();
+  if(!lastSyncOk){
+    alert('⚠️ 구글시트 연결에 실패해서 저장을 중단했어요.\n오래된 데이터로 시트를 덮어쓸 위험이 있어 안전을 위해 막았습니다.\n인터넷 연결과 새로고침을 확인한 뒤 다시 시도해주세요.');
+    return;
+  }
+  newRows=[...pendingNewRows, entry];
   pushToSheet();
   setSS('ok',`저장됨 · 새 내역 ${newRows.length}건`);
   closeModal(); renderL(); renderM();
 }
 
-function delEntry(id){
+async function delEntry(id){
   if(!confirm('삭제할까요?')) return;
-  newRows=newRows.filter(e=>String(e.id)!==String(id));
+  const pendingNewRows=newRows.filter(e=>String(e.id)!==String(id));
+
+  setSS('load','삭제 전 최신 데이터 확인 중...');
+  await syncNow();
+  if(!lastSyncOk){
+    alert('⚠️ 구글시트 연결에 실패해서 삭제를 중단했어요.\n오래된 데이터로 시트를 덮어쓸 위험이 있어 안전을 위해 막았습니다.\n인터넷 연결과 새로고침을 확인한 뒤 다시 시도해주세요.');
+    return;
+  }
+  newRows=pendingNewRows;
   pushToSheet();
   setSS('ok',`저장됨 · 새 내역 ${newRows.length}건`);
   renderL(); renderM();
