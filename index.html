@@ -261,7 +261,8 @@ select,input{padding:6px 10px;border:.5px solid var(--bdr);border-radius:8px;fon
   <div class="set-card">
     <h3>📋 Apps Script 코드</h3>
     <div class="step-box">
-      시트 이름: <code>장부</code> (헤더: id, 날짜, 구분, 회원, 금액, 메모)<br>
+      보관 시트: <code>장부</code> (과거 데이터, 앱이 절대 수정하지 않음)<br>
+      신규 시트: <code>장부_신규</code> (헤더: id, 날짜, 구분, 회원, 금액, 메모 · 앱이 여기에만 한 줄씩 추가/삭제)<br>
       잔액 시트: <code>설정</code> (A1=입출금통장잔액, B1=세이프박스잔액)
     </div>
     <textarea id="gs-code" style="width:100%;height:160px;font-size:11px;font-family:monospace;padding:10px;border:.5px solid var(--bdr);border-radius:8px;background:#fafaf8;resize:vertical" readonly></textarea>
@@ -292,7 +293,7 @@ select,input{padding:6px 10px;border:.5px solid var(--bdr);border-radius:8px;fon
       </select>
     </div>
     <div class="frow" id="mint">
-      <label>이자 구분</label>
+      <label id="mint-label">이자 구분</label>
       <select id="mmi">
         <option value="이자">입출금통장 이자</option>
         <option value="세이프박스">세이프박스 이자</option>
@@ -329,62 +330,92 @@ const MEMBERS = ['김경진','김예정','김현진','노해님','박소미','�
 const FEE = 30000;
 
 // Apps Script 코드
-const GS_CODE = `function doGet(e) {
+const GS_CODE = `function readSheetData(ss, name, archived) {
+  const sh = ss.getSheetByName(name);
+  if (!sh || sh.getLastRow() < 2) return [];
+  const rows = sh.getRange(2, 1, sh.getLastRow() - 1, 6).getValues();
+  return rows.filter(r => r[0]).map(r => ({
+    id: r[0],
+    date: r[1] instanceof Date ? Utilities.formatDate(r[1], 'Asia/Seoul', 'yyyy-MM-dd') : String(r[1]).substring(0, 10),
+    type: r[2],
+    member: r[3] || '',
+    amount: Number(r[4]),
+    desc: r[5] || '',
+    archived: archived
+  }));
+}
+
+function doGet(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
-  // 장부 데이터
-  const sheet = ss.getSheetByName('장부');
-  let data = [];
-  if (sheet && sheet.getLastRow() >= 2) {
-    const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues();
-    data = rows.filter(r => r[0]).map(r => ({
-      id: r[0],
-      date: r[1] instanceof Date ? Utilities.formatDate(r[1], 'Asia/Seoul', 'yyyy-MM-dd') : String(r[1]).substring(0, 10),
-      type: r[2],
-      member: r[3] || '',
-      amount: Number(r[4]),
-      desc: r[5] || ''
-    }));
-  }
-  
-  // 잔액 설정
+
+  // '장부'는 과거 데이터 보관용 · 이 스크립트는 절대 여기에 쓰지 않음
+  // '장부_신규'는 이후 추가되는 내역만 쌓이는 곳 (한 줄 추가/한 줄 삭제만 수행)
+  const data = [
+    ...readSheetData(ss, '장부', true),
+    ...readSheetData(ss, '장부_신규', false)
+  ];
+
   const cfg = ss.getSheetByName('설정');
   let balCheck = 0, balSafe = 0;
   if (cfg) {
     balCheck = Number(cfg.getRange('A1').getValue()) || 0;
     balSafe  = Number(cfg.getRange('B1').getValue()) || 0;
   }
-  
+
   const result = { data, balCheck, balSafe };
   return ContentService.createTextOutput(JSON.stringify(result))
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+function getNewSheet(ss) {
+  let sheet = ss.getSheetByName('장부_신규');
+  if (!sheet) {
+    sheet = ss.insertSheet('장부_신규');
+    sheet.appendRow(['id','날짜','구분','회원','금액','메모']);
+  }
+  return sheet;
+}
+
+function deleteRowById(sheet, id) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return false;
+  const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  for (let i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]) === String(id)) {
+      sheet.deleteRow(i + 2);
+      return true;
+    }
+  }
+  return false;
+}
+
 function doPost(e) {
   const payload = JSON.parse(e.postData.contents);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName('장부');
-  if (!sheet) {
-    sheet = ss.insertSheet('장부');
-    sheet.appendRow(['id','날짜','구분','회원','금액','메모']);
+
+  if (payload.action === 'add' && payload.entry) {
+    // 신규 추가는 항상 '장부_신규'에만 한 줄 추가
+    const sheet = getNewSheet(ss);
+    const en = payload.entry;
+    sheet.appendRow([en.id, en.date, en.type, en.member||'', en.amount, en.desc||'']);
+  } else if (payload.action === 'delete' && payload.id !== undefined) {
+    // archived=true면 '장부'(보관 시트)에서, 아니면 '장부_신규'에서 해당 id 한 줄만 삭제
+    if (payload.archived) {
+      const archiveSheet = ss.getSheetByName('장부');
+      if (archiveSheet) deleteRowById(archiveSheet, payload.id);
+    } else {
+      const sheet = getNewSheet(ss);
+      deleteRowById(sheet, payload.id);
+    }
   }
-  
-  const entries = payload.data || [];
-  if (sheet.getLastRow() > 1) {
-    sheet.deleteRows(2, sheet.getLastRow() - 1);
-  }
-  entries.forEach(e => {
-    sheet.appendRow([e.id, e.date, e.type, e.member||'', e.amount, e.desc||'']);
-  });
-  
-  // 잔액 업데이트
+
   if (payload.balCheck !== undefined) {
     let cfg = ss.getSheetByName('설정');
     if (!cfg) { cfg = ss.insertSheet('설정'); cfg.appendRow(['입출금통장','세이프박스']); }
     cfg.getRange('A1').setValue(payload.balCheck);
     cfg.getRange('B1').setValue(payload.balSafe);
   }
-  
+
   return ContentService.createTextOutput(JSON.stringify({ok: true}))
     .setMimeType(ContentService.MimeType.JSON);
 }`;
@@ -392,8 +423,7 @@ function doPost(e) {
 // =============================================
 // 상태
 // =============================================
-let allData = [];       // 구글 시트에서 받아온 전체 데이터
-let newRows = [];       // 이번 세션에 추가한 내역 (구글 시트 미반영 시 임시)
+let allData = [];       // 구글 시트에서 받아온 전체 데이터 (archived:true=장부, false=장부_신규)
 let balCheck = 0;
 let balSafe = 0;
 let lastSyncOk = false;  // 마지막 동기화가 실제로 구글시트에서 성공했는지 여부
@@ -453,7 +483,6 @@ async function syncNow(){
       }).filter(r=>r.date);
       balCheck = json.balCheck || 0;
       balSafe  = json.balSafe  || 0;
-      newRows = [];
       localStorage.setItem('sj_cache', JSON.stringify({data:allData, balCheck, balSafe}));
       setSS('ok', `연결됨 · ${allData.length}건`);
       lastSyncOk = true;
@@ -481,15 +510,30 @@ function loadCache(){
   }catch{ allData=[]; balCheck=0; balSafe=0; }
 }
 
-function pushToSheet(){
+async function postAdd(entry){
   const url = getUrl();
-  if(!url) return;
-  const combined = [...allData, ...newRows];
-  fetch(url,{
-    method:'POST', mode:'no-cors',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({data: combined, balCheck, balSafe})
-  }).catch(()=>{});
+  if(!url) return false;
+  try{
+    await fetch(url,{
+      method:'POST', mode:'no-cors',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'add', entry, balCheck, balSafe})
+    });
+    return true;
+  }catch(e){ return false; }
+}
+
+async function postDelete(id, archived){
+  const url = getUrl();
+  if(!url) return false;
+  try{
+    await fetch(url,{
+      method:'POST', mode:'no-cors',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'delete', id, archived:!!archived, balCheck, balSafe})
+    });
+    return true;
+  }catch(e){ return false; }
 }
 
 // =============================================
@@ -500,22 +544,25 @@ function pushToSheet(){
 // =============================================
 const BAL_BASE_DATE = '2026-06-23';
 
-function all(){ return [...allData, ...newRows]; }
+function all(){ return allData; }
 
 function getBalCheck(){
   const rows = all().filter(e => e.date > BAL_BASE_DATE);
   const inc = rows.filter(e=>e.type==='수입').reduce((s,e)=>s+e.amount, 0);
-  const exp = rows.filter(e=>e.type==='지출').reduce((s,e)=>s+e.amount, 0);
+  // 지출 중 회원(계좌)이 '세이프박스'가 아닌 것 = 입출금통장에서 나간 지출
+  const expCheck = rows.filter(e=>e.type==='지출' && e.member!=='세이프박스').reduce((s,e)=>s+e.amount, 0);
   // 이자 중 회원이 '세이프박스'가 아닌 것 = 입출금통장 이자
   const checkInterest = rows.filter(e=>e.type==='이자' && e.member!=='세이프박스').reduce((s,e)=>s+e.amount, 0);
-  return balCheck + inc - exp + checkInterest;
+  return balCheck + inc - expCheck + checkInterest;
 }
 
 function getBalSafe(){
   const rows = all().filter(e => e.date > BAL_BASE_DATE);
   // 이자 중 회원이 '세이프박스'인 것만 세이프박스 이자
   const interest = rows.filter(e=>e.type==='이자' && e.member==='세이프박스').reduce((s,e)=>s+e.amount, 0);
-  return balSafe + interest;
+  // 지출 중 회원(계좌)이 '세이프박스'인 것만 세이프박스에서 나간 지출
+  const expSafe = rows.filter(e=>e.type==='지출' && e.member==='세이프박스').reduce((s,e)=>s+e.amount, 0);
+  return balSafe + interest - expSafe;
 }
 
 function getBalance(){ return getBalCheck() + getBalSafe(); }
@@ -598,8 +645,7 @@ function renderL(){
   document.getElementById('hba-safe').textContent = fmt(bS);
 
   // 필터
-  const newIds = new Set(newRows.map(e=>String(e.id)));
-  let rows = ltab==='new' ? [...newRows] : all().slice();
+  let rows = ltab==='new' ? all().filter(r=>!r.archived) : all().slice();
   rows.sort((a,b)=>a.date<b.date?1:-1);
 
   const fmo = document.getElementById('fm').value;
@@ -621,16 +667,18 @@ function renderL(){
     const isIn = r.type!=='지출';
     const [y,mo,dd] = r.date.split('-');
     const bc = r.type==='수입'?'bi':r.type==='이자'?'bint':'bo';
-    const isNew = newIds.has(String(r.id));
+    const isNew = !r.archived;
     const label = r.type==='수입'?'회비':r.type==='이자'?'이자':'지출';
     const tag = isNew?'<span class="badge" style="background:#E1F5EE;color:#0F6E56;margin-left:4px;font-size:10px">NEW</span>':'';
-    const del = isNew?`<button class="btnd" onclick="adminDelEntry('${r.id}')">삭제</button>`:'<button class="btnd" style="opacity:.3;cursor:default" disabled>-</button>';
+    const del = `<button class="btnd" onclick="adminDelEntry('${r.id}')">삭제</button>`;
     const dateStr = dd?`${y}.${mo}.${dd}`:`${y}.${mo}`;
     const desc = r.desc||(r.type==='수입'?'회비':r.type==='이자'?'이자':'지출');
+    const acctTag = (r.type==='지출' && r.member) ? ` <span style="color:var(--hint);font-size:11px">(${r.member})</span>` : '';
+    const memberCell = r.type==='지출' ? `${desc}${acctTag}` : (r.member||desc||'');
     return `<tr>
       <td style="white-space:nowrap;font-size:13px">${dateStr}</td>
       <td><span class="badge ${bc}">${label}</span>${tag}</td>
-      <td>${r.member||desc||''}</td>
+      <td>${memberCell}</td>
       <td style="text-align:right" class="${isIn?'ai':'ao'}">${isIn?'+':'-'}${fmt(r.amount)}</td>
       <td>${del}</td>
     </tr>`;
@@ -744,7 +792,15 @@ function closeModal(){ document.getElementById('ov').classList.remove('open'); }
 function tChange(){
   const t=document.getElementById('mt').value;
   document.getElementById('mbr').style.display=t==='수입'?'':'none';
-  document.getElementById('mint').style.display=t==='이자'?'':'none';
+  document.getElementById('mint').style.display=(t==='이자'||t==='지출')?'':'none';
+  const mmi=document.getElementById('mmi');
+  if(t==='이자'){
+    document.getElementById('mint-label').textContent='이자 구분';
+    mmi.innerHTML='<option value="이자">입출금통장 이자</option><option value="세이프박스">세이프박스 이자</option>';
+  } else if(t==='지출'){
+    document.getElementById('mint-label').textContent='지출 계좌';
+    mmi.innerHTML='<option value="입출금통장">입출금통장에서 지출</option><option value="세이프박스">세이프박스에서 지출</option>';
+  }
   document.getElementById('ma').value=t==='수입'?FEE:'';
 }
 
@@ -758,38 +814,42 @@ async function saveEntry(){
   const desc=document.getElementById('mdc').value.trim();
   if(!amount){alert('금액을 입력해주세요');return;}
 
-  const interestSrc=document.getElementById('mmi').value;
-  const entryMember = type==='수입' ? member : (type==='이자' ? interestSrc : '');
-  const pendingNewRows=[...newRows]; // 재동기화 시 이번 세션에서 아직 못 올린 내역은 보존
-  const entry={id:Date.now(),type,member:entryMember,date:`${y}-${m}-${dd}`,amount,desc};
+  const acctSrc=document.getElementById('mmi').value;
+  const entryMember = type==='수입' ? member : ((type==='이자'||type==='지출') ? acctSrc : '');
+  const entry={id:Date.now(),type,member:entryMember,date:`${y}-${m}-${dd}`,amount,desc,archived:false};
 
-  // 저장 직전에 구글시트 최신 데이터로 다시 동기화 (오래된 캐시로 덮어쓰는 사고 방지)
-  setSS('load','저장 전 최신 데이터 확인 중...');
-  await syncNow();
-  if(!lastSyncOk){
-    alert('⚠️ 구글시트 연결에 실패해서 저장을 중단했어요.\n오래된 데이터로 시트를 덮어쓸 위험이 있어 안전을 위해 막았습니다.\n인터넷 연결과 새로고침을 확인한 뒤 다시 시도해주세요.');
+  setSS('load','저장 중...');
+  const ok = await postAdd(entry);
+  if(!ok){
+    alert('⚠️ 구글시트 저장에 실패했어요. 인터넷 연결을 확인한 뒤 다시 시도해주세요.');
+    setSS('err','저장 실패');
     return;
   }
-  newRows=[...pendingNewRows, entry];
-  pushToSheet();
-  setSS('ok',`저장됨 · 새 내역 ${newRows.length}건`);
+  // '장부_신규'에 한 줄만 추가되는 방식이라 기존 데이터는 건드리지 않음
+  allData = [...allData, entry];
+  setSS('ok',`저장됨`);
   closeModal(); renderL(); renderM();
+  syncNow(); // 최신 상태로 다시 확인 (읽기 전용이라 안전)
 }
 
 async function delEntry(id){
-  if(!confirm('삭제할까요?')) return;
-  const pendingNewRows=newRows.filter(e=>String(e.id)!==String(id));
-
-  setSS('load','삭제 전 최신 데이터 확인 중...');
-  await syncNow();
-  if(!lastSyncOk){
-    alert('⚠️ 구글시트 연결에 실패해서 삭제를 중단했어요.\n오래된 데이터로 시트를 덮어쓸 위험이 있어 안전을 위해 막았습니다.\n인터넷 연결과 새로고침을 확인한 뒤 다시 시도해주세요.');
+  const target = allData.find(e=>String(e.id)===String(id));
+  const archived = !!(target && target.archived);
+  const confirmMsg = archived
+    ? '⚠️ 이건 "장부" 보관 시트에 있는 예전 데이터예요.\n삭제하면 원본 시트에서도 완전히 지워지고 되돌릴 수 없어요.\n정말 삭제할까요?'
+    : '삭제할까요?';
+  if(!confirm(confirmMsg)) return;
+  setSS('load','삭제 중...');
+  const ok = await postDelete(id, archived);
+  if(!ok){
+    alert('⚠️ 구글시트 삭제에 실패했어요. 인터넷 연결을 확인한 뒤 다시 시도해주세요.');
+    setSS('err','삭제 실패');
     return;
   }
-  newRows=pendingNewRows;
-  pushToSheet();
-  setSS('ok',`저장됨 · 새 내역 ${newRows.length}건`);
+  allData = allData.filter(e=>String(e.id)!==String(id));
+  setSS('ok','삭제됨');
   renderL(); renderM();
+  syncNow(); // 최신 상태로 다시 확인 (읽기 전용이라 안전)
 }
 
 // =============================================
