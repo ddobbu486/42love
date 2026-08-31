@@ -192,7 +192,7 @@ select,input{padding:6px 10px;border:.5px solid var(--bdr);border-radius:8px;fon
       <button class="btn btng" style="font-size:12px;padding:4px 10px" onclick="closeDet()">닫기</button>
     </div>
     <div style="overflow-x:auto">
-      <table><thead><tr><th>날짜</th><th>금액</th><th>메모</th></tr></thead>
+      <table><thead><tr><th>날짜</th><th>금액</th><th>메모</th><th></th></tr></thead>
       <tbody id="mdtb"></tbody></table>
     </div>
   </div>
@@ -804,13 +804,14 @@ function renderMatrix(){
       rowTotal += amt;
       monthTotals[i] += amt;
       const isPast = (+year<curY) || (+year===curY && mo<=curM);
+      const click = `onclick="matrixCellClick('${m}','${year}',${mo})"`;
       if(amt>0){
         const memo = rows.map(r=>r.desc).filter(Boolean).join(', ');
-        return `<td style="text-align:center;color:var(--green);font-weight:600" title="${memo}">${fmt(amt)}</td>`;
+        return `<td style="text-align:center;color:var(--green);font-weight:600;cursor:pointer" title="${memo}" ${click}>${fmt(amt)}</td>`;
       } else if(isPast){
-        return `<td style="text-align:center;color:var(--red);font-weight:600">미납</td>`;
+        return `<td style="text-align:center;color:var(--red);font-weight:600;cursor:pointer" ${click}>미납</td>`;
       } else {
-        return `<td style="text-align:center;color:var(--hint)">-</td>`;
+        return `<td style="text-align:center;color:var(--hint);cursor:pointer" ${click}>-</td>`;
       }
     }).join('');
     grandTotal += rowTotal;
@@ -837,11 +838,26 @@ function showDet(name,from,to){
   const tb = document.getElementById('mdtb');
   tb.innerHTML = rows.length ? rows.map(r=>{
     const[y,m]=r.date.split('-');
-    return `<tr><td>${y}년 ${+m}월${r.date.split('-')[2]?' ('+r.date+')':''}</td><td class="ai">+${fmt(r.amount)}</td><td style="color:var(--hint)">${r.desc||''}</td></tr>`;
-  }).join('') : '<tr><td colspan="3" style="text-align:center;color:var(--hint);padding:24px">내역 없음</td></tr>';
+    const btns = `<button class="btnd" style="background:var(--ambl);color:var(--amb);margin-right:4px" onclick="adminEditEntry('${r.id}')">수정</button><button class="btnd" onclick="adminDelEntry('${r.id}')">삭제</button>`;
+    return `<tr><td>${y}년 ${+m}월${r.date.split('-')[2]?' ('+r.date+')':''}</td><td class="ai">+${fmt(r.amount)}</td><td style="color:var(--hint)">${r.desc||''}</td><td style="white-space:nowrap">${btns}</td></tr>`;
+  }).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--hint);padding:24px">내역 없음</td></tr>';
   document.getElementById('mds').scrollIntoView({behavior:'smooth'});
 }
 function closeDet(){ document.getElementById('mds').style.display='none'; }
+
+function matrixCellClick(member, year, month){
+  const mo = String(month).padStart(2,'0');
+  const from = `${year}-${mo}-01`;
+  const to   = `${year}-${mo}-31`;
+  const rows = all().filter(e=>e.type==='수입'&&e.member===member&&e.date>=from&&e.date<=to);
+  if(rows.length===0){
+    // 해당 달에 낸 기록이 없으면 바로 새 내역 추가 창을 그 회원/그 달로 미리 채워서 열기
+    if(!checkAdmin()) return;
+    openModal({type:'수입', member, date:`${year}-${mo}-01`, amount:FEE, desc:''});
+    return;
+  }
+  showDet(member, from, to);
+}
 
 // =============================================
 // 모달 / 추가
@@ -873,7 +889,8 @@ function openModal(entry){
   document.getElementById('mdm').innerHTML=Array.from({length:12},(_,i)=>`<option value="${i+1}" ${i+1===m?'selected':''}>${i+1}월</option>`).join('');
   document.getElementById('mdd').innerHTML=Array.from({length:31},(_,i)=>`<option value="${i+1}" ${i+1===d?'selected':''}>${i+1}일</option>`).join('');
 
-  if(entry){
+  const isEditingExisting = entry && entry.id !== undefined;
+  if(isEditingExisting){
     editingId = entry.id;
     editingArchived = !!entry.archived;
     document.getElementById('modal-title').textContent = '내역 수정';
@@ -896,11 +913,17 @@ function openModal(entry){
     editingArchived = false;
     document.getElementById('modal-title').textContent = '새 내역 추가';
     document.getElementById('mSaveBtn').textContent = '저장';
-    document.getElementById('mt').value='수입';
-    document.getElementById('mm').value='김경진';
-    document.getElementById('ma').value=FEE;
-    document.getElementById('mdc').value='';
+    document.getElementById('mt').value = (entry && entry.type) || '수입';
     tChange();
+    document.getElementById('mm').value = (entry && entry.member) || '김경진';
+    document.getElementById('ma').value = (entry && entry.amount) || FEE;
+    document.getElementById('mdc').value = (entry && entry.desc) || '';
+    if(entry && entry.date){
+      const[py,pm,pd] = entry.date.split('-');
+      if(py) document.getElementById('mdy').value = py;
+      if(pm) document.getElementById('mdm').value = String(Number(pm));
+      if(pd) document.getElementById('mdd').value = String(Number(pd));
+    }
   }
   document.getElementById('ov').classList.add('open');
 }
