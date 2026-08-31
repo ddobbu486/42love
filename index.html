@@ -178,6 +178,15 @@ select,input{padding:6px 10px;border:.5px solid var(--bdr);border-radius:8px;fon
       <tfoot id="mft"></tfoot>
     </table></div>
   </div>
+  <div class="sec">
+    <div class="sh"><h2>📅 월별 납부 매트릭스</h2>
+      <select id="mxy" onchange="renderMatrix()" style="font-size:13px"></select>
+    </div>
+    <div style="overflow-x:auto">
+      <table id="mxtable"><thead></thead><tbody></tbody><tfoot></tfoot></table>
+    </div>
+  </div>
+
   <div class="sec" id="mds" style="display:none">
     <div class="sh"><h2 id="mdt">상세</h2>
       <button class="btn btng" style="font-size:12px;padding:4px 10px" onclick="closeDet()">닫기</button>
@@ -317,7 +326,7 @@ select,input{padding:6px 10px;border:.5px solid var(--bdr);border-radius:8px;fon
     </div>
     <div class="brow">
       <button class="btn btng" onclick="closeModal()">취소</button>
-      <button class="btn btnp" onclick="saveEntry()">저장</button>
+      <button class="btn btnp" id="mSaveBtn" onclick="saveEntry()">저장</button>
     </div>
   </div>
 </div>
@@ -695,6 +704,7 @@ function resetMF(){
   document.getElementById('mty').value=cy;
   document.getElementById('mtm').value=cm;
   renderM();
+  renderMatrix();
 }
 
 function getMR(){
@@ -745,6 +755,64 @@ function renderM(){
     <td style="font-weight:700;text-align:center">합계</td>
     <td style="text-align:right;font-weight:700;color:var(--green)">${fmt(total)}</td>
     <td style="text-align:right;font-weight:700;color:var(--red)">${totalMissing?'-'+fmt(totalMissing):'✅ 완료'}</td>
+  </tr>`;
+}
+
+function initMatrixYears(){
+  const years = [...new Set([new Date().getFullYear(), ...all().map(e=>+e.date.slice(0,4))])].sort().reverse();
+  const s = document.getElementById('mxy'), cv = s.value || new Date().getFullYear().toString();
+  s.innerHTML = years.map(y=>`<option ${String(y)===cv?'selected':''}>${y}</option>`).join('');
+}
+
+function renderMatrix(){
+  initMatrixYears();
+  const year = document.getElementById('mxy').value || new Date().getFullYear().toString();
+  const now = new Date();
+  const curY = now.getFullYear(), curM = now.getMonth()+1;
+
+  const head = `<tr>
+    <th>회원</th>
+    ${Array.from({length:12},(_,i)=>`<th style="text-align:center">${i+1}월</th>`).join('')}
+    <th style="text-align:right">합계</th>
+  </tr>`;
+  document.getElementById('mxtable').querySelector('thead').innerHTML = head;
+
+  const monthTotals = Array(12).fill(0);
+  let grandTotal = 0;
+
+  const body = MEMBERS.map(m=>{
+    let rowTotal = 0;
+    const cells = Array.from({length:12},(_,i)=>{
+      const mo = i+1;
+      const ym = `${year}-${String(mo).padStart(2,'0')}`;
+      const rows = all().filter(e=>e.type==='수입' && e.member===m && e.date.startsWith(ym));
+      const amt = rows.reduce((s,e)=>s+e.amount,0);
+      rowTotal += amt;
+      monthTotals[i] += amt;
+      const isPast = (+year<curY) || (+year===curY && mo<=curM);
+      if(amt>0){
+        const memo = rows.map(r=>r.desc).filter(Boolean).join(', ');
+        return `<td style="text-align:center;color:var(--green);font-weight:600" title="${memo}">${fmt(amt)}</td>`;
+      } else if(isPast){
+        return `<td style="text-align:center;color:var(--red);font-weight:600">미납</td>`;
+      } else {
+        return `<td style="text-align:center;color:var(--hint)">-</td>`;
+      }
+    }).join('');
+    grandTotal += rowTotal;
+    return `<tr>
+      <td><div class="mc"><div class="mav">${m[0]}</div><strong>${m}</strong></div></td>
+      ${cells}
+      <td style="text-align:right;font-weight:700">${fmt(rowTotal)}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('mxtable').querySelector('tbody').innerHTML = body;
+
+  const footCells = monthTotals.map(t=>`<td style="text-align:center;font-weight:700">${t?fmt(t):'-'}</td>`).join('');
+  document.getElementById('mxtable').querySelector('tfoot').innerHTML = `<tr style="background:#fafaf8">
+    <td style="font-weight:700;text-align:center">합계</td>
+    ${footCells}
+    <td style="text-align:right;font-weight:700;color:var(--green)">${fmt(grandTotal)}</td>
   </tr>`;
 }
 
@@ -804,7 +872,9 @@ function tChange(){
   document.getElementById('ma').value=t==='수입'?FEE:'';
 }
 
+let isSaving = false;
 async function saveEntry(){
+  if(isSaving) return; // 중복 클릭/중복 전송 방지
   const type=document.getElementById('mt').value;
   const member=document.getElementById('mm').value;
   const y=document.getElementById('mdy').value;
@@ -818,18 +888,26 @@ async function saveEntry(){
   const entryMember = type==='수입' ? member : ((type==='이자'||type==='지출') ? acctSrc : '');
   const entry={id:Date.now(),type,member:entryMember,date:`${y}-${m}-${dd}`,amount,desc,archived:false};
 
+  isSaving = true;
+  const btn = document.getElementById('mSaveBtn');
+  if(btn){ btn.disabled = true; btn.textContent = '저장 중...'; btn.style.opacity = '.6'; }
   setSS('load','저장 중...');
-  const ok = await postAdd(entry);
-  if(!ok){
-    alert('⚠️ 구글시트 저장에 실패했어요. 인터넷 연결을 확인한 뒤 다시 시도해주세요.');
-    setSS('err','저장 실패');
-    return;
+  try{
+    const ok = await postAdd(entry);
+    if(!ok){
+      alert('⚠️ 구글시트 저장에 실패했어요. 인터넷 연결을 확인한 뒤 다시 시도해주세요.');
+      setSS('err','저장 실패');
+      return;
+    }
+    // '장부_신규'에 한 줄만 추가되는 방식이라 기존 데이터는 건드리지 않음
+    allData = [...allData, entry];
+    setSS('ok',`저장됨`);
+    closeModal(); renderL(); renderM();
+    syncNow(); // 최신 상태로 다시 확인 (읽기 전용이라 안전)
+  } finally {
+    isSaving = false;
+    if(btn){ btn.disabled = false; btn.textContent = '저장'; btn.style.opacity = ''; }
   }
-  // '장부_신규'에 한 줄만 추가되는 방식이라 기존 데이터는 건드리지 않음
-  allData = [...allData, entry];
-  setSS('ok',`저장됨`);
-  closeModal(); renderL(); renderM();
-  syncNow(); // 최신 상태로 다시 확인 (읽기 전용이라 안전)
 }
 
 async function delEntry(id){
