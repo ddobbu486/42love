@@ -532,6 +532,19 @@ async function postAdd(entry){
   }catch(e){ return false; }
 }
 
+async function postEdit(entry, archived){
+  const url = getUrl();
+  if(!url) return false;
+  try{
+    await fetch(url,{
+      method:'POST', mode:'no-cors',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'edit', entry, archived:!!archived, balCheck, balSafe})
+    });
+    return true;
+  }catch(e){ return false; }
+}
+
 async function postDelete(id, archived){
   const url = getUrl();
   if(!url) return false;
@@ -680,6 +693,7 @@ function renderL(){
     const label = r.type==='수입'?'회비':r.type==='이자'?'이자':'지출';
     const tag = isNew?'<span class="badge" style="background:#E1F5EE;color:#0F6E56;margin-left:4px;font-size:10px">NEW</span>':'';
     const del = `<button class="btnd" onclick="adminDelEntry('${r.id}')">삭제</button>`;
+    const edit = `<button class="btnd" style="background:var(--ambl);color:var(--amb);margin-right:4px" onclick="adminEditEntry('${r.id}')">수정</button>`;
     const dateStr = dd?`${y}.${mo}.${dd}`:`${y}.${mo}`;
     const desc = r.desc||(r.type==='수입'?'회비':r.type==='이자'?'이자':'지출');
     const acctTag = (r.type==='지출' && r.member) ? ` <span style="color:var(--hint);font-size:11px">(${r.member})</span>` : '';
@@ -689,7 +703,7 @@ function renderL(){
       <td><span class="badge ${bc}">${label}</span>${tag}</td>
       <td>${memberCell}</td>
       <td style="text-align:right" class="${isIn?'ai':'ao'}">${isIn?'+':'-'}${fmt(r.amount)}</td>
-      <td>${del}</td>
+      <td style="white-space:nowrap">${edit}${del}</td>
     </tr>`;
   }).join('');
 }
@@ -842,21 +856,55 @@ function checkAdmin(){
 }
 function adminOpenModal(){ if(!checkAdmin()) return; openModal(); }
 function adminDelEntry(id){ if(!checkAdmin()) return; delEntry(id); }
+function adminEditEntry(id){
+  if(!checkAdmin()) return;
+  const entry = allData.find(e=>String(e.id)===String(id));
+  if(!entry){ alert('항목을 찾을 수 없어요'); return; }
+  openModal(entry);
+}
 
-function openModal(){
+let editingId = null;
+let editingArchived = false;
+
+function openModal(entry){
   const{y,m,d}=nowYM();
   const years=[...new Set([y,...all().map(e=>+e.date.slice(0,4))])].sort().reverse();
   document.getElementById('mdy').innerHTML=years.map(yr=>`<option ${yr===y?'selected':''}>${yr}</option>`).join('');
   document.getElementById('mdm').innerHTML=Array.from({length:12},(_,i)=>`<option value="${i+1}" ${i+1===m?'selected':''}>${i+1}월</option>`).join('');
   document.getElementById('mdd').innerHTML=Array.from({length:31},(_,i)=>`<option value="${i+1}" ${i+1===d?'selected':''}>${i+1}일</option>`).join('');
-  document.getElementById('mt').value='수입';
-  document.getElementById('mm').value='김경진';
-  document.getElementById('ma').value=FEE;
-  document.getElementById('mdc').value='';
-  tChange();
+
+  if(entry){
+    editingId = entry.id;
+    editingArchived = !!entry.archived;
+    document.getElementById('modal-title').textContent = '내역 수정';
+    document.getElementById('mSaveBtn').textContent = '수정 저장';
+    document.getElementById('mt').value = entry.type;
+    tChange();
+    if(entry.type==='수입'){
+      document.getElementById('mm').value = entry.member || '김경진';
+    } else if(entry.type==='이자'||entry.type==='지출'){
+      document.getElementById('mmi').value = entry.member || (entry.type==='이자'?'이자':'입출금통장');
+    }
+    const[ey,em,ed] = (entry.date||'').split('-');
+    if(ey) document.getElementById('mdy').value = ey;
+    if(em) document.getElementById('mdm').value = String(Number(em));
+    if(ed) document.getElementById('mdd').value = String(Number(ed));
+    document.getElementById('ma').value = entry.amount;
+    document.getElementById('mdc').value = entry.desc || '';
+  } else {
+    editingId = null;
+    editingArchived = false;
+    document.getElementById('modal-title').textContent = '새 내역 추가';
+    document.getElementById('mSaveBtn').textContent = '저장';
+    document.getElementById('mt').value='수입';
+    document.getElementById('mm').value='김경진';
+    document.getElementById('ma').value=FEE;
+    document.getElementById('mdc').value='';
+    tChange();
+  }
   document.getElementById('ov').classList.add('open');
 }
-function closeModal(){ document.getElementById('ov').classList.remove('open'); }
+function closeModal(){ document.getElementById('ov').classList.remove('open'); editingId=null; editingArchived=false; }
 function tChange(){
   const t=document.getElementById('mt').value;
   document.getElementById('mbr').style.display=t==='수입'?'':'none';
@@ -886,27 +934,32 @@ async function saveEntry(){
 
   const acctSrc=document.getElementById('mmi').value;
   const entryMember = type==='수입' ? member : ((type==='이자'||type==='지출') ? acctSrc : '');
-  const entry={id:Date.now(),type,member:entryMember,date:`${y}-${m}-${dd}`,amount,desc,archived:false};
+  const isEdit = editingId!==null;
+  const entry={id: isEdit?editingId:Date.now(), type, member:entryMember, date:`${y}-${m}-${dd}`, amount, desc, archived: isEdit?editingArchived:false};
 
   isSaving = true;
   const btn = document.getElementById('mSaveBtn');
-  if(btn){ btn.disabled = true; btn.textContent = '저장 중...'; btn.style.opacity = '.6'; }
-  setSS('load','저장 중...');
+  if(btn){ btn.disabled = true; btn.textContent = isEdit?'수정 중...':'저장 중...'; btn.style.opacity = '.6'; }
+  setSS('load', isEdit?'수정 중...':'저장 중...');
   try{
-    const ok = await postAdd(entry);
+    const ok = isEdit ? await postEdit(entry, editingArchived) : await postAdd(entry);
     if(!ok){
-      alert('⚠️ 구글시트 저장에 실패했어요. 인터넷 연결을 확인한 뒤 다시 시도해주세요.');
-      setSS('err','저장 실패');
+      alert(isEdit ? '⚠️ 구글시트 수정에 실패했어요. 인터넷 연결을 확인한 뒤 다시 시도해주세요.' : '⚠️ 구글시트 저장에 실패했어요. 인터넷 연결을 확인한 뒤 다시 시도해주세요.');
+      setSS('err', isEdit?'수정 실패':'저장 실패');
       return;
     }
-    // '장부_신규'에 한 줄만 추가되는 방식이라 기존 데이터는 건드리지 않음
-    allData = [...allData, entry];
-    setSS('ok',`저장됨`);
-    closeModal(); renderL(); renderM();
+    if(isEdit){
+      allData = allData.map(e=>String(e.id)===String(entry.id)?entry:e);
+    } else {
+      // '장부_신규'에 한 줄만 추가되는 방식이라 기존 데이터는 건드리지 않음
+      allData = [...allData, entry];
+    }
+    setSS('ok', isEdit?'수정됨':'저장됨');
+    closeModal(); renderL(); renderM(); renderMatrix();
     syncNow(); // 최신 상태로 다시 확인 (읽기 전용이라 안전)
   } finally {
     isSaving = false;
-    if(btn){ btn.disabled = false; btn.textContent = '저장'; btn.style.opacity = ''; }
+    if(btn){ btn.disabled = false; btn.textContent = isEdit?'수정 저장':'저장'; btn.style.opacity = ''; }
   }
 }
 
