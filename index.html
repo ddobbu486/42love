@@ -455,13 +455,22 @@ function setSS(state, msg){
   document.getElementById('smsg').textContent = msg;
 }
 
+function fetchWithTimeout(url, opts, ms){
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), ms||15000);
+  return fetch(url, Object.assign({}, opts, {signal: ctrl.signal})).finally(()=>clearTimeout(t));
+}
+
 async function syncNow(){
   const url = getUrl();
   if(!url){ setSS('err','구글 시트 미연결 · 설정에서 URL 입력 필요'); return; }
   setSS('load','구글 시트 동기화 중...');
   try{
-    const res = await fetch(url);
+    // 캐시버스팅: 일부 모바일 브라우저가 GET 응답을 캐싱해 예전/에러 응답을 재사용하는 걸 방지
+    const sep = url.includes('?') ? '&' : '?';
+    const res = await fetchWithTimeout(url+sep+'t='+Date.now(), {cache:'no-store'}, 15000);
     const json = await res.json();
+    if(json.error) throw new Error(json.error);
     if(json.data && Array.isArray(json.data)){
       allData = json.data.map(r => {
         let d = String(r.date||'');
@@ -498,7 +507,8 @@ async function syncNow(){
     } else throw new Error('invalid');
   } catch(e){
     loadCache();
-    setSS('err','연결 실패 · 캐시 데이터 사용 중');
+    const reason = (e && e.name==='AbortError') ? '응답 지연(타임아웃)' : '연결 실패';
+    setSS('err', reason+' · 캐시 데이터 사용 중');
     lastSyncOk = false;
   }
   renderAll();
@@ -519,43 +529,34 @@ function loadCache(){
   }catch{ allData=[]; balCheck=0; balSafe=0; }
 }
 
-async function postAdd(entry){
+// 주의: Content-Type을 'text/plain'으로 보내면 브라우저가 preflight(OPTIONS) 요청을
+// 만들지 않는 "simple request"가 되어, GAS가 실제로 저장에 성공했는지 응답을
+// 제대로 읽어올 수 있다 (기존 mode:'no-cors'는 응답을 아예 읽을 수 없어서
+// 시트 저장이 실패해도 항상 "성공"으로 잘못 표시되는 문제가 있었음).
+async function postToGs(body){
   const url = getUrl();
   if(!url) return false;
   try{
-    await fetch(url,{
-      method:'POST', mode:'no-cors',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({action:'add', entry, balCheck, balSafe})
-    });
-    return true;
+    const res = await fetchWithTimeout(url, {
+      method:'POST',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify(body)
+    }, 15000);
+    const json = await res.json();
+    return !!json.ok;
   }catch(e){ return false; }
+}
+
+async function postAdd(entry){
+  return postToGs({action:'add', entry, balCheck, balSafe});
 }
 
 async function postEdit(entry, archived){
-  const url = getUrl();
-  if(!url) return false;
-  try{
-    await fetch(url,{
-      method:'POST', mode:'no-cors',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({action:'edit', entry, archived:!!archived, balCheck, balSafe})
-    });
-    return true;
-  }catch(e){ return false; }
+  return postToGs({action:'edit', entry, archived:!!archived, balCheck, balSafe});
 }
 
 async function postDelete(id, archived){
-  const url = getUrl();
-  if(!url) return false;
-  try{
-    await fetch(url,{
-      method:'POST', mode:'no-cors',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({action:'delete', id, archived:!!archived, balCheck, balSafe})
-    });
-    return true;
-  }catch(e){ return false; }
+  return postToGs({action:'delete', id, archived:!!archived, balCheck, balSafe});
 }
 
 // =============================================
