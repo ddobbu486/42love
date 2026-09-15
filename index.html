@@ -309,11 +309,25 @@ select,input{padding:6px 10px;border:.5px solid var(--bdr);border-radius:8px;fon
       </select>
     </div>
     <div class="frow">
-      <label>날짜</label>
+      <label>날짜 <span style="color:var(--hint);font-weight:400">(몇 월분인지)</span></label>
       <div style="display:flex;gap:6px">
         <select id="mdy" style="flex:1"></select>
         <select id="mdm" style="flex:1"></select>
         <select id="mdd" style="flex:1"></select>
+      </div>
+    </div>
+    <div class="frow">
+      <label style="display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="mpdChk" onchange="togglePaidDate()" style="width:auto">
+        실제 입금/지출일이 달라요
+      </label>
+      <div id="mpdRow" style="display:none;flex-direction:column;gap:4px;margin-top:6px">
+        <span style="font-size:11px;color:var(--hint)">잔액 계산은 이 날짜를 기준으로 해요</span>
+        <div style="display:flex;gap:6px">
+          <select id="mpdy" style="flex:1"></select>
+          <select id="mpdm" style="flex:1"></select>
+          <select id="mpdd" style="flex:1"></select>
+        </div>
       </div>
     </div>
     <div class="frow">
@@ -568,9 +582,10 @@ async function postDelete(id, archived){
 const BAL_BASE_DATE = '2026-06-23';
 
 function all(){ return allData; }
+function pd(e){ return e.paidDate || e.date; } // 실제 입금/지출일 (없으면 date로 대체)
 
 function getBalCheck(){
-  const rows = all().filter(e => e.date > BAL_BASE_DATE);
+  const rows = all().filter(e => pd(e) > BAL_BASE_DATE);
   const inc = rows.filter(e=>e.type==='수입').reduce((s,e)=>s+e.amount, 0);
   // 지출 중 회원(계좌)이 '세이프박스'가 아닌 것 = 입출금통장에서 나간 지출
   const expCheck = rows.filter(e=>e.type==='지출' && e.member!=='세이프박스').reduce((s,e)=>s+e.amount, 0);
@@ -580,7 +595,7 @@ function getBalCheck(){
 }
 
 function getBalSafe(){
-  const rows = all().filter(e => e.date > BAL_BASE_DATE);
+  const rows = all().filter(e => pd(e) > BAL_BASE_DATE);
   // 이자 중 회원이 '세이프박스'인 것만 세이프박스 이자
   const interest = rows.filter(e=>e.type==='이자' && e.member==='세이프박스').reduce((s,e)=>s+e.amount, 0);
   // 지출 중 회원(계좌)이 '세이프박스'인 것만 세이프박스에서 나간 지출
@@ -696,11 +711,12 @@ function renderL(){
     const del = `<button class="btnd" onclick="adminDelEntry('${r.id}')">삭제</button>`;
     const edit = `<button class="btnd" style="background:var(--ambl);color:var(--amb);margin-right:4px" onclick="adminEditEntry('${r.id}')">수정</button>`;
     const dateStr = dd?`${y}.${mo}.${dd}`:`${y}.${mo}`;
+    const paidTag = (r.paidDate && r.paidDate!==r.date) ? `<div style="font-size:10px;color:var(--hint)">💰${r.paidDate.slice(5).replace('-','.')} 입금</div>` : '';
     const desc = r.desc||(r.type==='수입'?'회비':r.type==='이자'?'이자':'지출');
     const acctTag = (r.type==='지출' && r.member) ? ` <span style="color:var(--hint);font-size:11px">(${r.member})</span>` : '';
     const memberCell = r.type==='지출' ? `${desc}${acctTag}` : (r.member||desc||'');
     return `<tr>
-      <td style="white-space:nowrap;font-size:13px">${dateStr}</td>
+      <td style="white-space:nowrap;font-size:13px">${dateStr}${paidTag}</td>
       <td><span class="badge ${bc}">${label}</span>${tag}</td>
       <td>${memberCell}</td>
       <td style="text-align:right" class="${isIn?'ai':'ao'}">${isIn?'+':'-'}${fmt(r.amount)}</td>
@@ -889,6 +905,9 @@ function openModal(entry){
   document.getElementById('mdy').innerHTML=years.map(yr=>`<option ${yr===y?'selected':''}>${yr}</option>`).join('');
   document.getElementById('mdm').innerHTML=Array.from({length:12},(_,i)=>`<option value="${i+1}" ${i+1===m?'selected':''}>${i+1}월</option>`).join('');
   document.getElementById('mdd').innerHTML=Array.from({length:31},(_,i)=>`<option value="${i+1}" ${i+1===d?'selected':''}>${i+1}일</option>`).join('');
+  document.getElementById('mpdy').innerHTML=years.map(yr=>`<option ${yr===y?'selected':''}>${yr}</option>`).join('');
+  document.getElementById('mpdm').innerHTML=Array.from({length:12},(_,i)=>`<option value="${i+1}" ${i+1===m?'selected':''}>${i+1}월</option>`).join('');
+  document.getElementById('mpdd').innerHTML=Array.from({length:31},(_,i)=>`<option value="${i+1}" ${i+1===d?'selected':''}>${i+1}일</option>`).join('');
 
   const isEditingExisting = entry && entry.id !== undefined;
   if(isEditingExisting){
@@ -909,6 +928,14 @@ function openModal(entry){
     if(ed) document.getElementById('mdd').value = String(Number(ed));
     document.getElementById('ma').value = entry.amount;
     document.getElementById('mdc').value = entry.desc || '';
+
+    const hasPaidDate = !!entry.paidDate && entry.paidDate !== entry.date;
+    document.getElementById('mpdChk').checked = hasPaidDate;
+    togglePaidDate();
+    const[py2,pm2,pdd2] = (entry.paidDate || entry.date || '').split('-');
+    if(py2) document.getElementById('mpdy').value = py2;
+    if(pm2) document.getElementById('mpdm').value = String(Number(pm2));
+    if(pdd2) document.getElementById('mpdd').value = String(Number(pdd2));
   } else {
     editingId = null;
     editingArchived = false;
@@ -920,13 +947,25 @@ function openModal(entry){
     document.getElementById('ma').value = (entry && entry.amount) || FEE;
     document.getElementById('mdc').value = (entry && entry.desc) || '';
     if(entry && entry.date){
-      const[py,pm,pd] = entry.date.split('-');
+      const[py,pm,pdy] = entry.date.split('-');
       if(py) document.getElementById('mdy').value = py;
       if(pm) document.getElementById('mdm').value = String(Number(pm));
-      if(pd) document.getElementById('mdd').value = String(Number(pd));
+      if(pdy) document.getElementById('mdd').value = String(Number(pdy));
     }
+    document.getElementById('mpdChk').checked = false;
+    togglePaidDate();
   }
   document.getElementById('ov').classList.add('open');
+}
+function togglePaidDate(){
+  const on = document.getElementById('mpdChk').checked;
+  const row = document.getElementById('mpdRow');
+  row.style.display = on ? 'flex' : 'none';
+  if(on){
+    document.getElementById('mpdy').value = document.getElementById('mdy').value;
+    document.getElementById('mpdm').value = document.getElementById('mdm').value;
+    document.getElementById('mpdd').value = document.getElementById('mdd').value;
+  }
 }
 function closeModal(){ document.getElementById('ov').classList.remove('open'); editingId=null; editingArchived=false; }
 function tChange(){
@@ -959,7 +998,15 @@ async function saveEntry(){
   const acctSrc=document.getElementById('mmi').value;
   const entryMember = type==='수입' ? member : ((type==='이자'||type==='지출') ? acctSrc : '');
   const isEdit = editingId!==null;
-  const entry={id: isEdit?editingId:Date.now(), type, member:entryMember, date:`${y}-${m}-${dd}`, amount, desc, archived: isEdit?editingArchived:false};
+  const dateStr = `${y}-${m}-${dd}`;
+  let paidDate = '';
+  if(document.getElementById('mpdChk').checked){
+    const py=document.getElementById('mpdy').value;
+    const pm=String(document.getElementById('mpdm').value).padStart(2,'0');
+    const pdd=String(document.getElementById('mpdd').value).padStart(2,'0');
+    paidDate = `${py}-${pm}-${pdd}`;
+  }
+  const entry={id: isEdit?editingId:Date.now(), type, member:entryMember, date:dateStr, paidDate, amount, desc, archived: isEdit?editingArchived:false};
 
   isSaving = true;
   const btn = document.getElementById('mSaveBtn');
